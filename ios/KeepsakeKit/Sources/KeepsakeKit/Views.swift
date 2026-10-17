@@ -126,6 +126,9 @@ extension Library {
         return try await core.call("views.put", [ids, destination, learn], as: String.self)
     }
 
+    /// Sends saves to Review, for when you're not sure where they go.
+    public func toReview(_ ids: [String]) async throws { try await prepare(); try await core.call("views.toReview", [ids]) }
+
     /// Undo right after a save: it's removed outright, never reaching the Trash.
     public func undoSave(_ id: String) async throws { try await core.call("views.undoSave", [id]) }
 

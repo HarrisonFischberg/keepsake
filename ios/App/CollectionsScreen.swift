@@ -17,26 +17,7 @@ struct CollectionsScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     ScreenHeader(title: "Collections", subtitle: "For things to buy")
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
-                        ForEach(collections) { c in
-                            let items = model.saves.filter { $0.collectionId == c.id }
-                            NavigationLink(value: Route.collection(c.id, c.name)) {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    ZStack {
-                                        t.well
-                                        if let cover = items.first(where: \.hasImage) { SaveImage(cover) }
-                                        else { Image(systemName: "bag").font(.title).foregroundStyle(KindStyle("product").color) }
-                                    }
-                                    .frame(height: 110).clipped()
-                                    Text(c.name).font(KSFont.name(.headline)).foregroundStyle(t.ink).lineLimit(2)
-                                    Text(items.count == 1 ? "1 save" : "\(items.count) saves").font(.footnote).foregroundStyle(t.inkMuted)
-                                }
-                                .padding(8).background(t.paper).resting()
-                            }
-                            .buttonStyle(PressStyle())
-                            .accessibilityLabel("\(c.name), \(items.count) saves")
-                        }
-                    }
+                    CollectionTiles(collections: collections) { naming = true }
                 }
                 .padding(.horizontal, 18).padding(.bottom, 40)
             }

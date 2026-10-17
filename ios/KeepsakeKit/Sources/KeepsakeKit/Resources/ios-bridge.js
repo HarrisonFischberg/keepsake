@@ -386,6 +386,17 @@
       }
       return this.put([id], to, 'strong');
     },
+    // Not sure where a save goes: it waits in Review (no collection, nothing to buy decided yet). A
+    // Lifestyle save becomes something to file (shoppingKindFor), since Review holds only those.
+    async toReview(ids) {
+      for (const id of ids) {
+        const it = await store.getItem(id);
+        if (!it) continue;
+        const patch = { collectionId: null, needsReview: true };
+        if (K.kinds.hasOwnView(K.kinds.kindOf(it))) Object.assign(patch, { kind: K.kinds.shoppingKindFor(it), details: {} });
+        await store.updateItem(id, patch, { by: 'kind' });
+      }
+    },
     // Undoing a save that just happened removes it outright (background.js UNDO_SAVE).
     async undoSave(id) { await store.deleteForever([id]); },
     // A workout's goals with their progress (goals.js goalProgress).

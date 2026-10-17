@@ -30,6 +30,7 @@ final class SaveFlowTests: XCTestCase {
         let app = launch(seeded: true)
         tab(app, "Library")
         XCTAssertTrue(app.staticTexts["Library"].waitForExistence(timeout: 5))
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Places,'")).firstMatch.tap()
         let place = card(app, "Café Azulejo")
         for _ in 0..<6 where !place.isHittable { app.swipeUp() }
         place.tap()

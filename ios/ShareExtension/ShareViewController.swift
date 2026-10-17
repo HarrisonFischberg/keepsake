@@ -37,11 +37,18 @@ final class ShareViewController: UIViewController {
 @MainActor @Observable
 final class ShareState {
     enum Phase { case saving, saved, duplicate, failed(String) }
+    /// The two libraries a save can live in.
+    enum Shelf: Hashable { case collections, lifestyle }
+    static let review = "review"
     var phase: Phase = .saving
     var save: Save?
     var destinations: [Destination] = []
-    var destination: String?          // Destination.value
+    /// Everything saved, for each group's cover and count.
+    var saves: [Save] = []
+    var destination: String?          // Destination.value, or `review`
     var destinationLabel = ""
+    /// The library being looked through; nil shows the two library cards.
+    var shelf: Shelf?
     var touched = false
     var note = ""
     var finish: () -> Void = {}
@@ -70,9 +77,15 @@ final class ShareState {
             Haptic.saved()
             phase = .saved
             destinations = (try? await library.destinations()) ?? []
+            saves = (try? library.saves()) ?? []
             let here = s.hasOwnView ? "kind:\(s.kind)" : s.collectionId
-            destination = here
-            destinationLabel = destinations.first { $0.value == here }?.label ?? (result.needsReview ? "Review" : result.destination ?? "")
+            if let d = destinations.first(where: { $0.value == here }) {
+                destination = d.value
+                destinationLabel = d.label
+            } else {
+                destination = Self.review
+                destinationLabel = "Review"
+            }
             UIAccessibility.post(notification: .announcement, argument: "Saved to \(destinationLabel)")
         } catch {
             phase = .failed(error.localizedDescription)
@@ -80,18 +93,62 @@ final class ShareState {
         }
     }
 
-    /// Flick to the next or previous place it could go.
-    func step(_ delta: Int) {
-        guard let save, let library, !destinations.isEmpty else { return }
+    /// Which library it's in now, so that card wears the check.
+    var shelfNow: Shelf? {
+        guard let d = destinations.first(where: { $0.value == destination }) else { return nil }
+        return d.group == "lifestyle" ? .lifestyle : .collections
+    }
+
+    func groups(_ shelf: Shelf) -> [Destination] { destinations.filter { $0.group == (shelf == .lifestyle ? "lifestyle" : "collection") } }
+
+    /// What's already in a group (not counting this save), for its tile.
+    func members(_ d: Destination) -> [Save] {
+        saves.filter { $0.id != save?.id && (d.kind.map { k in $0.kind == k } ?? ($0.collectionId == d.value)) }
+    }
+
+    func members(_ shelf: Shelf) -> [Save] {
+        saves.filter { $0.id != save?.id && (shelf == .lifestyle ? $0.hasOwnView : !($0.collectionId ?? "").isEmpty) }
+    }
+
+    func open(_ shelf: Shelf?) {
         touched = true
-        let i = destinations.firstIndex { $0.value == destination } ?? -1
-        let next = destinations[(i + delta + destinations.count) % destinations.count]
-        destination = next.value
-        destinationLabel = next.label
-        Haptic.detent()
+        Haptic.pageTurned()
+        self.shelf = shelf
+    }
+
+    /// Puts it in a group, then shows the two libraries again with where it went.
+    func put(_ d: Destination) { put(d.value, d.label) }
+
+    private func put(_ value: String, _ label: String) {
+        guard let save, let library else { return }
+        touched = true
+        destination = value
+        destinationLabel = label
+        shelf = nil
+        Haptic.dropped()
+        UIAccessibility.post(notification: .announcement, argument: "Going to \(label)")
+        Task { _ = try? await library.put([save.id], in: value) }
+    }
+
+    /// Not sure yet: it waits in Review, where Keepsake suggests a home later.
+    func toReview() {
+        guard let save, let library, destination != Self.review else { shelf = nil; return }
+        touched = true
+        destination = Self.review
+        destinationLabel = "Review"
+        shelf = nil
+        Haptic.settled()
+        UIAccessibility.post(notification: .announcement, argument: "Going to Review")
+        Task { try? await library.toReview([save.id]) }
+    }
+
+    func createCollection(_ name: String) {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        guard let library, !name.isEmpty else { return }
         Task {
-            _ = try? await library.put([save.id], in: next.value)
-            Haptic.settled()
+            guard let c = try? await library.createCollection(named: name) else { Haptic.refused(); return }
+            destinations = (try? await library.destinations()) ?? destinations
+            put(c.id, c.name)
         }
     }
 
@@ -168,31 +225,49 @@ struct ShareCard: View {
     @Environment(\.ks) private var t
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var appeared = false
-    @State private var drag: CGFloat = 0
     @State private var writing = false
+    @State private var naming = false
+    @State private var newName = ""
     @FocusState private var noteFocused: Bool
 
     // iOS presents a share extension as a full-height sheet, so the whole sheet is the table: the save
-    // drawn large as its object, with the slip and actions at the bottom under the thumb.
+    // drawn as its object, and under the thumb the two libraries it can live in (Collections and
+    // Lifestyle). Tap one to look through its groups and tap a group to put it there; Review is always
+    // one tap away for when you're not sure.
     var body: some View {
         @Bindable var state = state
         ZStack {
             TableBackground()
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 16) {
                 status
-                Spacer(minLength: 8)
                 if let save = state.save {
-                    SaveObject(save)
-                        .frame(maxWidth: 240)
-                        .frame(maxWidth: .infinity)
-                        .rotationEffect(.degrees(appeared || reduce ? -1.5 : -8))
-                        .scaleEffect(appeared || reduce ? 1 : 0.85)
-                        .opacity(appeared ? 1 : 0)
+                    if state.shelf == nil {
+                        Spacer(minLength: 4)
+                        SaveObject(save)
+                            .frame(maxWidth: 210)
+                            .frame(maxWidth: .infinity)
+                            .rotationEffect(.degrees(appeared || reduce ? -1.5 : -8))
+                            .scaleEffect(appeared || reduce ? 1 : 0.85)
+                            .opacity(appeared ? 1 : 0)
+                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                        Spacer(minLength: 4)
+                    } else {
+                        compact(save).transition(.opacity)
+                    }
                 } else if case .saving = state.phase {
+                    Spacer()
                     ProgressView().frame(maxWidth: .infinity)
+                    Spacer()
+                } else {
+                    Spacer()
                 }
-                Spacer(minLength: 8)
-                if case .saved = state.phase { slip }
+                if case .saved = state.phase {
+                    Group {
+                        if let shelf = state.shelf { groups(shelf) } else { libraries }
+                    }
+                    .transition(reduce ? .opacity : .asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
+                                                                 removal: .move(edge: .leading).combined(with: .opacity)))
+                }
                 if writing {
                     TextField("Add a note", text: $state.note, axis: .vertical)
                         .focused($noteFocused)
@@ -212,9 +287,16 @@ struct ShareCard: View {
                 }
             }
             .padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 12)
+            .animation(KSMotion.or(KSMotion.sheet, reduce: reduce), value: state.shelf)
+            .animation(KSMotion.or(KSMotion.settle, reduce: reduce), value: state.destination)
         }
         .simultaneousGesture(TapGesture().onEnded { state.touched = true })
         .onAppear { withAnimation(KSMotion.or(KSMotion.lift, reduce: reduce).delay(0.05)) { appeared = true } }
+        .alert("New collection", isPresented: $naming) {
+            TextField("Name", text: $newName)
+            Button("Cancel", role: .cancel) { newName = "" }
+            Button("Create") { state.createCollection(newName); newName = "" }
+        } message: { Text("It goes straight in.") }
     }
 
     @ViewBuilder private var status: some View {
@@ -244,72 +326,170 @@ struct ShareCard: View {
         .frame(minHeight: 30)
     }
 
-    /// The destination slip: flick sideways (or tap the arrows) through Lifestyle views and collections.
-    private var slip: some View {
-        VStack(spacing: 10) {
+    /// While looking through a library: the save as a small card, so the groups get the room.
+    private func compact(_ save: Save) -> some View {
+        HStack(spacing: 12) {
+            SaveImage(save, symbolSize: 18).frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 3))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(save.title).font(KSFont.name(.headline)).foregroundStyle(t.ink).lineLimit(2)
+                HStack(spacing: 5) {
+                    Image(systemName: icon(state.destination)).imageScale(.small)
+                    Text("In \(state.destinationLabel)").contentTransition(.opacity)
+                }
+                .font(.subheadline.weight(.medium)).foregroundStyle(tint(state.destination))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10).background(t.paper).resting()
+    }
+
+    private func icon(_ value: String?) -> String {
+        if value == ShareState.review { return "tray" }
+        if let d = state.destinations.first(where: { $0.value == value }), let k = d.kind { return KindStyle(k).symbol }
+        return "bag"
+    }
+
+    private func tint(_ value: String?) -> Color {
+        if value == ShareState.review { return t.accent }
+        if let d = state.destinations.first(where: { $0.value == value }), let k = d.kind { return KindStyle(k).color }
+        return KindStyle("product").color
+    }
+
+    // MARK: the two libraries
+
+    private var libraries: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Where does it live?").font(KSFont.name(.title3)).foregroundStyle(t.ink).accessibilityAddTraits(.isHeader)
+                (Text(state.destination == ShareState.review ? "For now it's waiting in " : "Keepsake put it in ").foregroundStyle(t.inkMuted)
+                 + Text(state.destinationLabel).foregroundStyle(tint(state.destination)).fontWeight(.semibold))
+                    .font(.subheadline)
+                    .contentTransition(.opacity)
+            }
             HStack(spacing: 12) {
-                arrow("chevron.left", -1)
-                Spacer()
-                VStack(spacing: 2) {
-                    Text("Going to").font(KSFont.label).foregroundStyle(t.inkMuted)
-                    HStack(spacing: 8) {
-                        if let d = state.destinations.first(where: { $0.value == state.destination }), let k = d.kind {
-                            Image(systemName: KindStyle(k).symbol).foregroundStyle(KindStyle(k).color)
-                        }
-                        Text(state.destinationLabel.isEmpty ? "Review" : state.destinationLabel)
-                            .font(KSFont.name(.title2)).foregroundStyle(t.ink)
-                            .contentTransition(.numericText())
+                libraryCard(.collections, "Collections", "Things to buy", symbol: "bag", tint: KindStyle("product").color)
+                libraryCard(.lifestyle, "Lifestyle", "Recipes, places, workouts", symbol: "sparkles", tint: KindStyle("recipe").color)
+            }
+            reviewRow
+        }
+    }
+
+    private func libraryCard(_ shelf: ShareState.Shelf, _ title: String, _ caption: String, symbol: String, tint: Color) -> some View {
+        let here = state.shelfNow == shelf
+        let count = state.groups(shelf).count
+        return Button { state.open(shelf) } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top) {
+                    CoverFan(state.members(shelf), symbol: symbol, tint: tint, size: 40)
+                    Spacer(minLength: 0)
+                    if here {
+                        Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(tint)
+                            .transition(.scale.combined(with: .opacity))
                     }
                 }
-                .offset(x: drag)
-                Spacer()
-                arrow("chevron.right", 1)
+                Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(KSFont.name(.title3)).foregroundStyle(t.ink)
+                    Text(here ? state.destinationLabel : caption).font(.footnote).foregroundStyle(here ? tint : t.inkMuted).lineLimit(1)
+                }
+                HStack(spacing: 4) {
+                    Text(count == 1 ? "1 group" : "\(count) groups")
+                    Image(systemName: "chevron.right").imageScale(.small)
+                }
+                .font(.caption.weight(.medium)).foregroundStyle(t.inkMuted)
             }
-            dots
-        }
-        .padding(.horizontal, 12).padding(.vertical, 14)
-        .frame(maxWidth: .infinity)
-        .background {
-            ZStack {
-                Rectangle().fill(t.paper)
-                Rectangle().strokeBorder(KindStyle(state.save?.kind ?? "link").color.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [4, 3])).padding(5)
+            .padding(14)
+            .frame(maxWidth: .infinity, minHeight: 168, alignment: .topLeading)
+            .background {
+                ZStack {
+                    Rectangle().fill(t.paper)
+                    if here { Rectangle().fill(tint.opacity(0.07)) }
+                }
             }
+            .overlay { Rectangle().strokeBorder(here ? tint.opacity(0.9) : t.rule, lineWidth: here ? 1.5 : 0.75) }
             .resting()
         }
-        .gesture(DragGesture(minimumDistance: 8)
-            .onChanged { drag = $0.translation.width * 0.4 }
-            .onEnded { v in
-                let flick = v.predictedEndTranslation.width
-                withAnimation(KSMotion.or(KSMotion.settle, reduce: reduce)) {
-                    if flick < -60 { state.step(1) } else if flick > 60 { state.step(-1) }
-                    drag = 0
-                }
-            })
+        .buttonStyle(PressStyle())
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Going to \(state.destinationLabel)")
-        .accessibilityHint("Swipe up or down to choose another place for it.")
-        .accessibilityAdjustableAction { dir in state.step(dir == .increment ? 1 : -1) }
+        .accessibilityLabel(title)
+        .accessibilityValue(here ? "It's in \(state.destinationLabel)" : caption)
+        .accessibilityHint("Shows its groups.")
+        .accessibilityAddTraits(here ? [.isButton, .isSelected] : .isButton)
     }
 
-    private func arrow(_ symbol: String, _ delta: Int) -> some View {
-        Button { withAnimation(KSMotion.or(KSMotion.settle, reduce: reduce)) { state.step(delta) } } label: {
-            Image(systemName: symbol).font(.subheadline.weight(.bold)).foregroundStyle(t.inkMuted).frame(width: 44, height: 44)
-        }
-        .accessibilityHidden(true)
-    }
-
-    private var dots: some View {
-        let all = state.destinations
-        let i = all.firstIndex { $0.value == state.destination } ?? 0
-        let window = all.indices.filter { abs($0 - i) <= 3 }
-        return HStack(spacing: 6) {
-            ForEach(window, id: \.self) { j in
-                Capsule().fill(j == i ? KindStyle(all[j].kind ?? "link").color : t.ink.opacity(0.18))
-                    .frame(width: j == i ? 18 : 6, height: 6)
+    /// Always there: not sure yet, so it waits in Review.
+    private var reviewRow: some View {
+        let here = state.destination == ShareState.review
+        return Button { state.toReview() } label: {
+            HStack(spacing: 12) {
+                Image(systemName: here ? "tray.full.fill" : "tray").font(.body.weight(.medium)).foregroundStyle(t.accent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(here ? "Waiting in Review" : "Not sure? Put it in Review").font(.subheadline.weight(.semibold)).foregroundStyle(t.ink)
+                    Text("Keepsake suggests a home for it later.").font(.caption).foregroundStyle(t.inkMuted)
+                }
+                Spacer(minLength: 0)
+                if here { Image(systemName: "checkmark").font(.subheadline.weight(.bold)).foregroundStyle(t.accent) }
             }
+            .padding(.horizontal, 14).frame(minHeight: 56)
+            .background(Rectangle().strokeBorder(here ? t.accent : t.ink.opacity(0.28), style: StrokeStyle(lineWidth: 1, dash: here ? [] : [4, 3])))
+            .background(here ? t.accent.opacity(0.08) : .clear)
+            .contentShape(Rectangle())
         }
-        .animation(KSMotion.or(KSMotion.settle, reduce: reduce), value: state.destination)
-        .accessibilityHidden(true)
+        .buttonStyle(PressStyle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(here ? "Waiting in Review" : "Put it in Review")
+        .accessibilityAddTraits(here ? [.isButton, .isSelected] : .isButton)
+    }
+
+    // MARK: one library's groups
+
+    private func groups(_ shelf: ShareState.Shelf) -> some View {
+        let lifestyle = shelf == .lifestyle
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                Button { state.open(nil) } label: {
+                    Image(systemName: "chevron.left").font(.headline).foregroundStyle(t.ink)
+                        .frame(width: 44, height: 44).background(t.paper, in: Circle()).overlay(Circle().strokeBorder(t.rule, lineWidth: 0.75))
+                }
+                .accessibilityLabel("Back")
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(lifestyle ? "Lifestyle" : "Collections").font(KSFont.name(.title3)).foregroundStyle(t.ink).accessibilityAddTraits(.isHeader)
+                    Text(lifestyle ? "Pick the view it belongs in" : "Pick a collection, or start one").font(.footnote).foregroundStyle(t.inkMuted)
+                }
+                .padding(.leading, 4)
+                Spacer()
+            }
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 14)], spacing: 16) {
+                    ForEach(state.groups(shelf)) { d in
+                        let items = state.members(d)
+                        let k = d.kind.map(KindStyle.init)
+                        let here = state.destination == d.value
+                        Button { state.put(d) } label: {
+                            GroupTile(d.label, subtitle: items.isEmpty ? "Empty" : (items.count == 1 ? "1 save" : "\(items.count) saves"),
+                                      cover: items.first(where: \.hasImage), symbol: k?.symbol ?? "bag",
+                                      tint: k?.color ?? KindStyle("product").color, kind: d.kind, selected: here)
+                                .overlay(alignment: .topLeading) {
+                                    if here {
+                                        Image(systemName: "checkmark.circle.fill").font(.title3)
+                                            .foregroundStyle(k?.color ?? KindStyle("product").color, t.paper)
+                                            .padding(12)
+                                    }
+                                }
+                        }
+                        .buttonStyle(PressStyle())
+                    }
+                    if !lifestyle {
+                        Button { naming = true } label: { NewGroupTile("New collection") }
+                            .buttonStyle(PressStyle())
+                    }
+                }
+                .padding(.horizontal, 4).padding(.vertical, 8)
+            }
+            .scrollIndicators(.hidden)
+            .frame(maxHeight: .infinity)
+            reviewRow
+        }
     }
 
     private func secondary(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {

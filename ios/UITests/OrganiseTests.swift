@@ -36,6 +36,10 @@ final class OrganiseTests: XCTestCase {
         app.launchArguments += ["-importOnLaunch", demo]
         app.launch()
         app.tabBars.buttons["Library"].tap()
+        // The Library opens on its stacks; Products lays the saves out, photos and all.
+        let products = app.scrollViews.buttons["Products"].firstMatch
+        XCTAssertTrue(products.waitForExistence(timeout: 10))
+        products.tap()
         let coffee = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Glass pour-over'")).firstMatch
         XCTAssertTrue(coffee.waitForExistence(timeout: 10))
         sleep(2)   // pictures load
@@ -44,7 +48,8 @@ final class OrganiseTests: XCTestCase {
             XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Saved from'")).firstMatch.waitForExistence(timeout: 1.5), "\(chip): a card opened instead of the filter")
             XCTAssertTrue(app.scrollViews.buttons[chip].firstMatch.isSelected, "\(chip) chip is selected")
             XCTAssertFalse(coffee.exists, "\(chip): the product is filtered out")
-            app.scrollViews.buttons["All"].firstMatch.tap()
+            products.tap()
+            XCTAssertTrue(coffee.waitForExistence(timeout: 3))
         }
     }
 

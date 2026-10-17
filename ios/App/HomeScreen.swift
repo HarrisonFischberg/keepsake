@@ -2,19 +2,21 @@ import SwiftUI
 import KeepsakeKit
 import KeepsakeUI
 
-/// Home: what needs you, what's new, your Lifestyle views, and one save to come back to. Nothing else.
+/// Home: what needs you, what's new, your Collections and Lifestyle (each folded into one row that
+/// opens its own page), and one save to come back to. Nothing else.
 struct HomeScreen: View {
     let zoom: Namespace.ID
     @Environment(LibraryModel.self) private var model
     @Environment(\.ks) private var t
     @State private var settings = false
+    @State private var collections: [SaveCollection] = []
     /// Recent shelf cards grow with Dynamic Type so their text never truncates.
     @ScaledMetric(relativeTo: .headline) private var shelfWidth: CGFloat = 170
     @Environment(\.horizontalSizeClass) private var size
 
-    private var lifestyle: [(kind: String, count: Int)] {
-        KindStyle.lifestyle.map { k in (k, model.saves.filter { $0.kind == k }.count) }.filter { $0.count > 0 }
-    }
+    private var lifestyleSaves: [Save] { model.saves.filter(\.hasOwnView) }
+    private var collectedSaves: [Save] { model.saves.filter { !($0.collectionId ?? "").isEmpty } }
+    private var lifestyleViews: Int { Set(lifestyleSaves.map(\.kind)).count }
 
     /// Saved over six weeks ago and not opened since (Home's "Come back to" in Chrome).
     private var comeBackTo: Save? {
@@ -29,7 +31,7 @@ struct HomeScreen: View {
         ZStack {
             TableBackground()
             ScrollView {
-                VStack(alignment: .leading, spacing: 26) {
+                VStack(alignment: .leading, spacing: 20) {
                     HStack(alignment: .top) {
                         ScreenHeader(title: "Keepsake", subtitle: nil)
                         if size != .regular { Button { settings = true } label: {
@@ -45,14 +47,13 @@ struct HomeScreen: View {
                         EmptyNote(symbol: "bookmark", text: "Nothing saved yet. Share a page, a post or a place to Keepsake from any app.")
                     }
                     if !model.saves.isEmpty { recent }
-                    if !lifestyle.isEmpty { lifestyleTiles }
-                    NavigationLink(value: Route.collections) {
-                        Label("Collections", systemImage: "bag").font(KSFont.name(.headline)).foregroundStyle(t.ink)
-                            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading).padding(.horizontal, 14)
-                            .background(t.paper).resting()
+                    VStack(spacing: 12) {
+                        shelfRow("Collections", route: .collections, saves: collectedSaves, symbol: "bag", tint: KindStyle("product").color,
+                                 detail: count(collections.count, "collection") + " · " + count(collectedSaves.count, "save"))
+                        shelfRow("Lifestyle", route: .lifestyle, saves: lifestyleSaves, symbol: "sparkles", tint: KindStyle("recipe").color,
+                                 detail: lifestyleSaves.isEmpty ? "Places, recipes, workouts and more" : count(lifestyleViews, "view") + " · " + count(lifestyleSaves.count, "save"))
                     }
-                    .buttonStyle(PressStyle())
-                    if let save = comeBackTo { comeBack(save) }
+                    if let save = comeBackTo { comeBack(save).padding(.top, 6) }
                 }
                 .padding(.horizontal, 18).padding(.bottom, 40)
             }
@@ -60,6 +61,32 @@ struct HomeScreen: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $settings) { SettingsScreen() }
+        .task(id: model.saves.count) { collections = (try? model.library?.collections()) ?? [] }
+    }
+
+    private func count(_ n: Int, _ noun: String) -> String { n == 1 ? "1 \(noun)" : "\(n) \(noun)s" }
+
+    /// A folded section: a fan of its pictures, its name and what it holds. One tap opens its page.
+    private func shelfRow(_ title: String, route: Route, saves: [Save], symbol: String, tint: Color, detail: String) -> some View {
+        NavigationLink(value: route) {
+            HStack(spacing: 14) {
+                CoverFan(saves, symbol: symbol, tint: tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(KSFont.name(.title3)).foregroundStyle(t.ink)
+                    Text(detail).font(.subheadline).foregroundStyle(t.inkMuted).lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.subheadline.weight(.semibold)).foregroundStyle(t.inkMuted)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
+            .background(t.paper).resting()
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(detail)
+        .accessibilityAddTraits(.isButton)
     }
 
     private var reviewBanner: some View {
@@ -83,7 +110,7 @@ struct HomeScreen: View {
     }
 
     private var recent: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 6) {
             section("Recent")
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 16) {
@@ -99,36 +126,10 @@ struct HomeScreen: View {
                         .accessibilityAction(named: "Move to Trash") { Task { await model.trash(save) } }
                     }
                 }
-                .padding(.horizontal, 18).padding(.vertical, 12)
+                .padding(.horizontal, 18).padding(.top, 6).padding(.bottom, 10)
             }
             .scrollIndicators(.hidden)
             .padding(.horizontal, -18)
-        }
-    }
-
-    private var lifestyleTiles: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            section("Lifestyle")
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12)], spacing: 12) {
-                ForEach(lifestyle, id: \.kind) { entry in
-                    let k = KindStyle(entry.kind)
-                    NavigationLink(value: Route.kind(entry.kind)) {
-                        HStack(spacing: 12) {
-                            Stamp(kind: entry.kind, size: 34)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(k.plural).font(KSFont.name(.headline)).foregroundStyle(t.ink)
-                                    .lineLimit(3)
-                                Text("\(entry.count)").font(.subheadline).foregroundStyle(t.inkMuted)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .padding(14).frame(minHeight: 64)
-                        .background(t.paper).resting()
-                    }
-                    .buttonStyle(PressStyle())
-                    .accessibilityLabel("\(k.plural), \(entry.count)")
-                }
-            }
         }
     }
 

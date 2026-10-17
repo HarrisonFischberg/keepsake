@@ -7,6 +7,7 @@ enum Route: Hashable {
     case kind(String)
     case review
     case collections
+    case lifestyle
     case collection(String, String)
 }
 
@@ -72,6 +73,7 @@ struct Stack<Root: View>: View {
                     case .kind(let k): KindScreen(kind: k, zoom: zoom)
                     case .review: ReviewScreen(zoom: zoom)
                     case .collections: CollectionsScreen(zoom: zoom)
+                    case .lifestyle: LifestyleScreen(zoom: zoom)
                     case .collection(let id, let name): CollectionScreen(id: id, name: name, zoom: zoom)
                     }
                 }

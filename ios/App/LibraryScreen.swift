@@ -3,8 +3,10 @@ import UniformTypeIdentifiers
 import KeepsakeKit
 import KeepsakeUI
 
-/// Library: every save as an object on the table. One primary action, finding a save, lives at the
-/// bottom under the thumb (the search dock); paste-a-link sits beside it.
+/// Library: Home's shape with everything in it. Your Collections, then your Lifestyle views, each a
+/// stack you open to see its saves; chips narrow it to one group, and filtering, searching or
+/// selecting lays the saves out as objects. One primary action, finding a save, lives at the bottom
+/// under the thumb (the search dock); paste-a-link sits beside it.
 struct LibraryScreen: View {
     let zoom: Namespace.ID
     @Environment(LibraryModel.self) private var model
@@ -21,17 +23,29 @@ struct LibraryScreen: View {
     @State private var selecting = false
     @State private var selected: Set<String> = []
     @State private var destinations: [Destination] = []
+    @State private var collections: [SaveCollection] = []
+    @State private var naming = false
+    @State private var newName = ""
     @FocusState private var searching: Bool
 
-    enum Filter: Hashable { case all, review, kind(String) }
+    enum Filter: Hashable { case all, collections, lifestyle, review, kind(String), collection(String) }
+
+    /// Stacks (Collections and Lifestyle) rather than saves: nothing is narrowing the saves themselves.
+    private var grouped: Bool {
+        guard query.trimmingCharacters(in: .whitespaces).isEmpty, status == nil, source == nil, !selecting else { return false }
+        return filter == .all || filter == .collections || filter == .lifestyle
+    }
 
     private var shown: [Save] {
         if let results, !query.trimmingCharacters(in: .whitespaces).isEmpty { return results.items }
         var list: [Save]
         switch filter {
         case .all: list = model.saves
+        case .collections: list = model.saves.filter { !($0.collectionId ?? "").isEmpty }
+        case .lifestyle: list = model.saves.filter(\.hasOwnView)
         case .review: list = model.saves.filter { $0.needsCollection && $0.purchased != true }
         case .kind(let k): list = model.saves.filter { $0.kind == k }
+        case .collection(let id): list = model.saves.filter { $0.collectionId == id }
         }
         switch status {
         case "todo": list = list.filter { $0.status != "done" && $0.purchased != true }
@@ -79,6 +93,12 @@ struct LibraryScreen: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
             if case .success(let url) = result { Task { await model.importFile(url) } }
         }
+        .alert("New collection", isPresented: $naming) {
+            TextField("Name", text: $newName)
+            Button("Cancel", role: .cancel) { newName = "" }
+            Button("Create") { Task { _ = try? await model.library?.createCollection(named: newName); newName = ""; loadCollections() } }
+        }
+        .task(id: model.saves.count) { loadCollections() }
         .onChange(of: model.focusSearch, initial: true) { _, want in
             if want { searching = true; model.focusSearch = false }
         }
@@ -89,6 +109,8 @@ struct LibraryScreen: View {
             results = try? await library.search(q)
         }
     }
+
+    private func loadCollections() { collections = (try? model.library?.collections()) ?? [] }
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
@@ -120,9 +142,17 @@ struct LibraryScreen: View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 Chip("All", selected: filter == .all) { set(.all) }
+                Chip("Collections", symbol: "bag", tint: KindStyle("product").color, selected: filter == .collections) { set(.collections) }
+                Chip("Lifestyle", symbol: "sparkles", tint: KindStyle("recipe").color, selected: filter == .lifestyle) { set(.lifestyle) }
                 if model.reviewCount > 0 {
                     Chip("Review \(model.reviewCount)", symbol: "tray", selected: filter == .review) { set(.review) }
                 }
+                divider
+                ForEach(collections) { c in
+                    Chip(c.name, symbol: "bag", tint: KindStyle("product").color, selected: filter == .collection(c.id)) { set(.collection(c.id)) }
+                        .accessibilityLabel("Collection \(c.name)")
+                }
+                if !collections.isEmpty && !kinds.isEmpty { divider }
                 ForEach(kinds, id: \.self) { k in
                     let s = KindStyle(k)
                     Chip(plural(k), symbol: s.symbol, tint: s.color, selected: filter == .kind(k)) { set(.kind(k)) }
@@ -156,6 +186,11 @@ struct LibraryScreen: View {
         .padding(.horizontal, -18)
     }
 
+    /// A hairline between the chip groups: the two libraries, your collections, then the kinds.
+    private var divider: some View {
+        Rectangle().fill(t.rule).frame(width: 1, height: 22).padding(.horizontal, 2).accessibilityHidden(true)
+    }
+
     private func set(_ f: Filter) {
         withAnimation(KSMotion.or(KSMotion.settle, reduce: reduce)) { filter = f }
     }
@@ -176,6 +211,8 @@ struct LibraryScreen: View {
             EmptyNote(symbol: "bookmark", text: "Nothing saved yet. Share a page, a post or a place to Keepsake from any app, or import your Chrome library.") {
                 importing = true
             }
+        } else if grouped {
+            overview
         } else if shown.isEmpty {
             EmptyNote(symbol: "magnifyingglass", text: query.isEmpty ? "Nothing here yet." : "No saves match “\(query)”.")
         } else {
@@ -217,6 +254,50 @@ struct LibraryScreen: View {
             }
         }
     }
+
+    /// Collections first, then Lifestyle: each group a stack with one of its pictures, opening to its saves.
+    @ViewBuilder private var overview: some View {
+        VStack(alignment: .leading, spacing: 30) {
+            if filter == .all, model.reviewCount > 0 { reviewRow }
+            if filter != .lifestyle {
+                let filed = model.saves.filter { !($0.collectionId ?? "").isEmpty }.count
+                GroupSection(title: "Collections", detail: "\(count(collections.count, "collection")) · \(count(filed, "save"))") {
+                    CollectionTiles(collections: collections) { naming = true }
+                }
+            }
+            if filter != .collections {
+                let lifestyle = model.saves.filter(\.hasOwnView)
+                GroupSection(title: "Lifestyle", detail: "\(count(Set(lifestyle.map(\.kind)).count, "view")) · \(count(lifestyle.count, "save"))") {
+                    if lifestyle.isEmpty {
+                        Text("Recipes, places, workouts, films and books land here.").font(KSFont.note).foregroundStyle(t.inkMuted)
+                    } else {
+                        LifestyleTiles()
+                    }
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    /// Saves waiting for a home, as one quiet row above the stacks.
+    private var reviewRow: some View {
+        Button { set(.review) } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "tray.full").font(.title3).foregroundStyle(t.accent)
+                Text(model.reviewCount == 1 ? "1 save waiting in Review" : "\(model.reviewCount) saves waiting in Review")
+                    .font(.subheadline.weight(.medium)).foregroundStyle(t.ink)
+                Spacer()
+                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(t.inkMuted)
+            }
+            .padding(.horizontal, 14).frame(minHeight: 52)
+            .background(t.paper)
+            .overlay(alignment: .leading) { Rectangle().fill(t.accent).frame(width: 3) }
+            .resting()
+        }
+        .buttonStyle(PressStyle())
+    }
+
+    private func count(_ n: Int, _ noun: String) -> String { n == 1 ? "1 \(noun)" : "\(n) \(noun)s" }
 
     /// Select mode: move or trash several saves at once.
     private var selectionBar: some View {

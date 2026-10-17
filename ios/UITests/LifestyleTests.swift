@@ -25,6 +25,19 @@ final class LifestyleTests: XCTestCase {
         card.tap()
     }
 
+    func testLibraryGroupsCollectionsThenLifestyle() {
+        let app = launch()
+        app.tabBars.buttons["Library"].tap()
+        let collections = app.staticTexts["Collections"], lifestyle = app.staticTexts["Lifestyle"]
+        XCTAssertTrue(collections.waitForExistence(timeout: 5) && lifestyle.exists)
+        XCTAssertLessThan(collections.frame.minY, lifestyle.frame.minY, "Collections sits above Lifestyle")
+        app.buttons["Collection Clothing"].tap()
+        XCTAssertTrue(app.buttons["Collection Clothing"].isSelected, "a collection is a chip too")
+        app.buttons["All"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Workouts,'")).firstMatch.tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Push-up ladder'")).firstMatch.waitForExistence(timeout: 3))
+    }
+
     func testPlacesReviewFixMovesItToItsState() {
         let app = launch()
         app.tabBars.buttons["Places"].tap()
@@ -71,8 +84,13 @@ final class LifestyleTests: XCTestCase {
     func testHomeShowsReviewAndLifestyle() {
         let app = launch()
         XCTAssertTrue(app.staticTexts["1 save needs a collection"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Places, 2"].exists)
-        app.buttons["Recipes, 2"].tap()
+        // Collections first, then Lifestyle: each folded into one row that opens its page.
+        let collections = app.buttons["Collections"], lifestyle = app.buttons["Lifestyle"]
+        XCTAssertTrue(collections.exists && lifestyle.exists)
+        XCTAssertLessThan(collections.frame.minY, lifestyle.frame.minY, "Collections sits above Lifestyle")
+        lifestyle.tap()
+        XCTAssertTrue(app.buttons["Places, 2 saves"].waitForExistence(timeout: 3))
+        app.buttons["Recipes, 2 saves"].tap()
         XCTAssertTrue(app.staticTexts["Recipes"].waitForExistence(timeout: 3))
     }
 }
